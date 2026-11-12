@@ -1,0 +1,41 @@
+# ===== Visual Studio / MSVC 生成物 =====
+.vs/
+Debug/
+Release/
+x64/
+x86/
+ARM/
+ARM64/
+*.user
+*.suo
+*.sdf
+*.opensdf
+*.VC.db
+*.VC.db-shm
+*.VC.db-wal
+*.VC.VC.opendb
+*.ipch
+*.tlog
+*.idb
+*.ilk
+*.obj
+*.enc
+*.pch
+*.gch
+
+# ===== 可执行文件与调试符号 =====
+*.exe
+*.dll
+*.lib
+*.exp
+*.pdb
+*.map
+
+# ===== OpenCV SDK（第三方库，体积大，不入库）=====
+opencv/
+OpenCV/
+
+# ===== 其它 =====
+Thumbs.db
+desktop.ini
+.DS_Store
