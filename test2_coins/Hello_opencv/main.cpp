@@ -191,7 +191,7 @@ int main(int argc, char** argv)
     utils::logging::setLogLevel(utils::logging::LOG_LEVEL_SILENT);
 
     string path = (argc > 1) ? argv[1]
-                             : "D:/homework/Machine Vision/test2_coins/verify/coins.jpg";
+                             : "D:/homework/Machine Vision/test2_coins/coins.jpg";
 
     Mat gray = imread(path, IMREAD_GRAYSCALE);        // 直接按灰度读入
     if (gray.empty()) { cout << "读不到图片：" << path << endl; return -1; }
