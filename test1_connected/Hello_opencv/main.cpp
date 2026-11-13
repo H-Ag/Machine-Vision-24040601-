@@ -14,9 +14,11 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 
+#include <filesystem>
 #include <iomanip>
 #include <iostream>
 #include <string>
+#include <system_error>
 #include <vector>
 
 using namespace cv;
@@ -27,6 +29,11 @@ static const int kMinArea = 200;
 
 // 闭运算的核尺寸（奇数像素）。设 1 表示不做闭运算
 static const int kCloseSize = 5;
+
+// 目标比背景暗还是亮：
+//   true  —— 暗目标 / 亮背景（白纸上的黑色回形针），用反向二值化 THRESH_BINARY_INV
+//   false —— 亮目标 / 暗背景（黑底上的亮硬币），用正向二值化 THRESH_BINARY
+static const bool kDarkObject = true;
 
 // ============================================================================
 // 等价表 Two-pass 标记，4 邻接
@@ -118,11 +125,15 @@ static vector<Blob> analyze(Mat& labels, int& numLabels, int minArea)
         }
     }
 
-    // 过滤小噪点 + 重新编号（背景 0 不动）
+    // 过滤小噪点 + 丢掉接触图像边界的连通域（原图四周那圈细黑边框会连成一整条）
+    // 同时把保留下来的前景重新编号成 1..N（背景 0 不动）
     vector<int> remap(n, 0);
     int compact = 1;
-    for (int i = 1; i < n; ++i)
-        if (area[i] >= minArea) remap[i] = compact++;
+    for (int i = 1; i < n; ++i) {
+        const bool border = (minx[i] == 0) || (miny[i] == 0) ||
+                            (maxx[i] == w - 1) || (maxy[i] == h - 1);
+        if (area[i] >= minArea && !border) remap[i] = compact++;
+    }
 
     vector<Blob> out;
     for (int i = 0; i < n; ++i) {
@@ -192,16 +203,19 @@ int main(int argc, char** argv)
     utils::logging::setLogLevel(utils::logging::LOG_LEVEL_SILENT);
 
     string path = (argc > 1) ? argv[1]
-                             : "D:/homework/Machine Vision/test1_connected/verify/coins.jpg";
+                             : "D:/homework/Machine Vision/test1_connected/verify/2181.png";
 
     Mat gray = imread(path, IMREAD_GRAYSCALE);        // 直接按灰度读入
     if (gray.empty()) { cout << "读不到图片：" << path << endl; return -1; }
     cout << "输入图像：" << path << "  (" << gray.cols << " x " << gray.rows << ")" << endl;
 
     // ---------- 1. 全局大津法二值化 ----------
+    // kDarkObject 决定正/反向：反向时暗目标(回形针)变白前景，亮背景变黑
     Mat binary;
-    const double th = threshold(gray, binary, 0, 255, THRESH_BINARY | THRESH_OTSU);
-    cout << "二值化：全局大津法，阈值 = " << th << endl;
+    const int thType = kDarkObject ? THRESH_BINARY_INV : THRESH_BINARY;
+    const double th = threshold(gray, binary, 0, 255, thType | THRESH_OTSU);
+    cout << "二值化：全局大津法（" << (kDarkObject ? "反向，暗目标" : "正向，亮目标")
+         << "），阈值 = " << th << endl;
     cout << "二值化后前景像素 = " << countNonZero(binary) << endl;
 
     // ---------- 1.5 闭运算：先膨胀后腐蚀，填掉目标内部的小孔、接上细缝 ----------
@@ -225,7 +239,7 @@ int main(int argc, char** argv)
          << "，其中背景 " << bg << " 个、前景目标 " << nFore << " 个" << endl;
     if (before - 1 - nFore > 0)
         cout << "（已忽略 " << before - 1 - nFore
-             << " 个面积小于 " << kMinArea << " 的连通域）" << endl;
+             << " 个面积小于 " << kMinArea << " 或接触图像边界的连通域）" << endl;
 
     // ---------- 3. 统计表（背景在第 0 行，序号连续） ----------
     cout << "\n" << setw(5) << "序号" << setw(7) << "x" << setw(7) << "y"
@@ -260,10 +274,14 @@ int main(int argc, char** argv)
     cvtColor(gray, grayBox, COLOR_GRAY2BGR);
     drawBoxes(grayBox, blobs);                       // 原灰度图 + 框 + 序号
 
-    imwrite("out/binary.png", binBgr);
-    imwrite("out/labels_color.png", colorBox);
-    imwrite("out/result.png", grayBox);
-    cout << "\n结果图已保存：out/binary.png、out/labels_color.png、out/result.png" << endl;
+    // 输出目录：不存在就自动创建（相对当前工作目录）
+    std::error_code ec;
+    std::filesystem::create_directories("output", ec);
+
+    imwrite("output/binary.png", binBgr);
+    imwrite("output/labels_color.png", colorBox);
+    imwrite("output/result.png", grayBox);
+    cout << "\n结果图已保存到 output/ ：binary.png、labels_color.png、result.png" << endl;
 
     imshow("1 binary", binBgr);
     imshow("2 labels color", colorBox);
