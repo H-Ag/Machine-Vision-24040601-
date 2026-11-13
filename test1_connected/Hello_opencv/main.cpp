@@ -2,11 +2,11 @@
 //  图像二值化 + 连通域标记（4 邻接，等价表 Two-pass）
 //    1. 灰度图 -> 全局大津法二值化
 //    2. 手写等价表 Two-pass 标记连通域
-//    3. 给每个连通域填不同颜色，并输出统计表 + 中心坐标表 + 三张结果图
+//    3. 过滤噪点及宽/高大于 300 的大连通域，输出统计表 + 中心坐标表 + 三张结果图
 // ============================================================================
 
 #include <opencv2/opencv.hpp>
-#include <opencv2/core/utils/logger.hpp>   // cv::utils::logging::setLogLevel
+#include <opencv2/core/utils/logger.hpp>   
 
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -25,10 +25,13 @@ using namespace cv;
 using namespace std;
 
 // 面积小于它的连通域当噪点丢掉；设 0 表示不过滤
-static const int kMinArea = 200;
+static const int kMinArea = 100;
+
+// 宽或高大于该值的前景连通域不计入（过滤大边框/大阴影）
+static const int kMaxSide = 300;
 
 // 闭运算的核尺寸（奇数像素）。设 1 表示不做闭运算
-static const int kCloseSize = 5;
+static const int kCloseSize = 1;
 
 // 目标比背景暗还是亮：
 //   true  —— 暗目标 / 亮背景（白纸上的黑色回形针），用反向二值化 THRESH_BINARY_INV
@@ -66,9 +69,11 @@ static Mat twoPass(const Mat& bin, int& numLabels)
             if (up == 0 && left == 0) {                  // a. 新标签
                 parent.push_back(next);
                 lrow[x] = next++;
-            } else if (up == 0 || left == 0) {            // b. 沿用唯一标签
+            }
+            else if (up == 0 || left == 0) {           // b. 沿用唯一标签
                 lrow[x] = up ? up : left;
-            } else {                                     // c. 取最小值并记等价
+            }
+            else {                                     // c. 取最小值并记等价
                 lrow[x] = min(up, left);
                 if (up != left) {
                     const int a = dsFind(parent, up), b = dsFind(parent, left);
@@ -97,14 +102,14 @@ static Mat twoPass(const Mat& bin, int& numLabels)
 
 // ============================================================================
 // 统计每个连通域：外接矩形、面积、中心坐标（0 号是背景，也统计）
-// 同时把面积小于 minArea 的前景丢掉，并把标签重排成连续的 1..N
+// 同时过滤面积小于 minArea 或宽/高大于 maxSide 的前景，并重排为连续的 1..N
 // ============================================================================
 struct Blob {
     int label, x, y, w, h, area;
     double cx, cy;
 };
 
-static vector<Blob> analyze(Mat& labels, int& numLabels, int minArea)
+static vector<Blob> analyze(Mat& labels, int& numLabels, int minArea, int maxSide)
 {
     const int h = labels.rows, w = labels.cols, n = numLabels;
 
@@ -125,26 +130,27 @@ static vector<Blob> analyze(Mat& labels, int& numLabels, int minArea)
         }
     }
 
-    // 过滤小噪点 + 丢掉接触图像边界的连通域（原图四周那圈细黑边框会连成一整条）
-    // 同时把保留下来的前景重新编号成 1..N（背景 0 不动）
+    // 过滤小噪点以及宽或高大于 maxSide 的连通域，保留下来的前景重编为 1..N
     vector<int> remap(n, 0);
     int compact = 1;
     for (int i = 1; i < n; ++i) {
-        const bool border = (minx[i] == 0) || (miny[i] == 0) ||
-                            (maxx[i] == w - 1) || (maxy[i] == h - 1);
-        if (area[i] >= minArea && !border) remap[i] = compact++;
+        const int bw = maxx[i] - minx[i] + 1;
+        const int bh = maxy[i] - miny[i] + 1;
+        if (area[i] >= minArea && bw <= maxSide && bh <= maxSide) {
+            remap[i] = compact++;
+        }
     }
 
     vector<Blob> out;
     for (int i = 0; i < n; ++i) {
         const int lb = (i == 0) ? 0 : remap[i];
-        if (i != 0 && lb == 0) continue;                 // 被丢掉的小块
+        if (i != 0 && lb == 0) continue;                 // 被过滤掉的连通域
         out.push_back(Blob{ lb, minx[i], miny[i], maxx[i] - minx[i] + 1,
                             maxy[i] - miny[i] + 1, (int)area[i],
                             double(sx[i]) / area[i], double(sy[i]) / area[i] });
     }
 
-    // 按新编号写回标签图，保证图上的序号和表格一致
+    // 按新编号写回标签图（被过滤掉的连通域 remap 为 0），保证图像与表格一致
     for (int y = 0; y < h; ++y) {
         int* lrow = labels.ptr<int>(y);
         for (int x = 0; x < w; ++x)
@@ -160,12 +166,12 @@ static vector<Blob> analyze(Mat& labels, int& numLabels, int minArea)
 static Mat colorLabels(const Mat& labels)
 {
     static const Scalar pal[] = {
-        Scalar(  0,   0, 255), Scalar(  0, 165, 255), Scalar(  0, 255, 255),
-        Scalar(  0, 255,   0), Scalar(255, 255,   0), Scalar(128, 255, 255),
+        Scalar(0,   0, 255), Scalar(0, 165, 255), Scalar(0, 255, 255),
+        Scalar(0, 255,   0), Scalar(255, 255,   0), Scalar(128, 255, 255),
         Scalar(255,   0,   0), Scalar(255,   0, 255), Scalar(128,   0, 255),
-        Scalar(255, 128,   0), Scalar(128, 255,   0), Scalar(  0, 128, 255),
-        Scalar(203, 192, 255), Scalar( 60,  20, 220), Scalar( 40, 200, 120),
-        Scalar(255,   0, 128), Scalar(128,   0,   0), Scalar(  0,   0, 128),
+        Scalar(255, 128,   0), Scalar(128, 255,   0), Scalar(0, 128, 255),
+        Scalar(203, 192, 255), Scalar(60,  20, 220), Scalar(40, 200, 120),
+        Scalar(255,   0, 128), Scalar(128,   0,   0), Scalar(0,   0, 128),
     };
     const int n = (int)(sizeof(pal) / sizeof(pal[0]));
 
@@ -193,7 +199,7 @@ static void drawBoxes(Mat& canvas, const vector<Blob>& blobs)
         rectangle(canvas, Rect(b.x, b.y, b.w, b.h), Scalar(0, 0, 255), 1);
         circle(canvas, Point((int)b.cx, (int)b.cy), 3, Scalar(255, 255, 255), -1);
         putText(canvas, to_string(b.label), Point(b.x, max(b.y - 4, 12)),
-                FONT_HERSHEY_SIMPLEX, 0.45, Scalar(0, 255, 0), 1);
+            FONT_HERSHEY_SIMPLEX, 0.45, Scalar(0, 255, 0), 1);
     }
 }
 
@@ -203,19 +209,18 @@ int main(int argc, char** argv)
     utils::logging::setLogLevel(utils::logging::LOG_LEVEL_SILENT);
 
     string path = (argc > 1) ? argv[1]
-                             : "D:/homework/Machine Vision/test1_connected/verify/2181.png";
+        : "D:/homework/Machine Vision/test1_connected/image.png";
 
-    Mat gray = imread(path, IMREAD_GRAYSCALE);        // 直接按灰度读入
+    Mat gray = imread(path, IMREAD_GRAYSCALE);         // 直接按灰度读入
     if (gray.empty()) { cout << "读不到图片：" << path << endl; return -1; }
     cout << "输入图像：" << path << "  (" << gray.cols << " x " << gray.rows << ")" << endl;
 
     // ---------- 1. 全局大津法二值化 ----------
-    // kDarkObject 决定正/反向：反向时暗目标(回形针)变白前景，亮背景变黑
     Mat binary;
     const int thType = kDarkObject ? THRESH_BINARY_INV : THRESH_BINARY;
     const double th = threshold(gray, binary, 0, 255, thType | THRESH_OTSU);
     cout << "二值化：全局大津法（" << (kDarkObject ? "反向，暗目标" : "正向，亮目标")
-         << "），阈值 = " << th << endl;
+        << "），阈值 = " << th << endl;
     cout << "二值化后前景像素 = " << countNonZero(binary) << endl;
 
     // ---------- 1.5 闭运算：先膨胀后腐蚀，填掉目标内部的小孔、接上细缝 ----------
@@ -224,43 +229,43 @@ int main(int argc, char** argv)
             MORPH_ELLIPSE, Size(kCloseSize, kCloseSize));
         morphologyEx(binary, binary, MORPH_CLOSE, kernel);
         cout << "闭运算：椭圆核 " << kCloseSize << "x" << kCloseSize
-             << "，前景像素 = " << countNonZero(binary) << endl;
+            << "，前景像素 = " << countNonZero(binary) << endl;
     }
 
     // ---------- 2. 连通域标记 + 统计 ----------
     int numLabels = 0;
     Mat labels = twoPass(binary, numLabels);
     const int before = numLabels;
-    vector<Blob> blobs = analyze(labels, numLabels, kMinArea);
+    vector<Blob> blobs = analyze(labels, numLabels, kMinArea, kMaxSide);
 
     const int bg = (blobs.empty() || blobs[0].label != 0) ? 0 : 1;
     const int nFore = (int)blobs.size() - bg;
     cout << "连通域数量（含背景）= " << (int)blobs.size()
-         << "，其中背景 " << bg << " 个、前景目标 " << nFore << " 个" << endl;
+        << "，其中背景 " << bg << " 个、前景目标 " << nFore << " 个" << endl;
     if (before - 1 - nFore > 0)
         cout << "（已忽略 " << before - 1 - nFore
-             << " 个面积小于 " << kMinArea << " 或接触图像边界的连通域）" << endl;
+        << " 个面积小于 " << kMinArea << " 或宽/高大于 " << kMaxSide << " 的连通域）" << endl;
 
     // ---------- 3. 统计表（背景在第 0 行，序号连续） ----------
     cout << "\n" << setw(5) << "序号" << setw(7) << "x" << setw(7) << "y"
-         << setw(7) << "w" << setw(7) << "h" << setw(10) << "面积"
-         << setw(11) << "cx" << setw(11) << "cy" << endl;
+        << setw(7) << "w" << setw(7) << "h" << setw(10) << "面积"
+        << setw(11) << "cx" << setw(11) << "cy" << endl;
     for (const Blob& b : blobs) {
         cout << setw(5) << b.label << setw(7) << b.x << setw(7) << b.y
-             << setw(7) << b.w << setw(7) << b.h << setw(10) << b.area
-             << setw(11) << fixed << setprecision(1) << b.cx
-             << setw(11) << b.cy << (b.label == 0 ? "  <- 背景" : "") << endl;
+            << setw(7) << b.w << setw(7) << b.h << setw(10) << b.area
+            << setw(11) << fixed << setprecision(1) << b.cx
+            << setw(11) << b.cy << (b.label == 0 ? "  <- 背景" : "") << endl;
     }
 
     // ---------- 4. 中心坐标表 ----------
     cout << "\n中心坐标（cx = Σx/面积，cy = Σy/面积）：" << endl;
     cout << setw(5) << "序号" << setw(11) << "cx" << setw(11) << "cy"
-         << setw(14) << "取整" << endl;
+        << setw(14) << "取整" << endl;
     for (const Blob& b : blobs)
         cout << setw(5) << b.label
-             << setw(11) << fixed << setprecision(2) << b.cx
-             << setw(11) << b.cy
-             << "    (" << (int)(b.cx + 0.5) << ", " << (int)(b.cy + 0.5) << ")" << endl;
+        << setw(11) << fixed << setprecision(2) << b.cx
+        << setw(11) << b.cy
+        << "    (" << (int)(b.cx + 0.5) << ", " << (int)(b.cy + 0.5) << ")" << endl;
 
     // ---------- 5. 三张结果图 ----------
     Mat color = colorLabels(labels);                 // 每个连通域一种颜色
